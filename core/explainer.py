@@ -3,13 +3,7 @@ import joblib
 import shap
 import os
 import matplotlib.pyplot as plt
-
-MODEL_PATH = "model/ids_model.pkl"
-FEATURES_FILE = "data/features_advanced.csv"
-ALERTS_FILE = "data/alerts.csv"
-OUT_DIR = "data/explain"
-
-os.makedirs(OUT_DIR, exist_ok=True)
+from core.config import MODEL_PATH, FEATURES_FILE, ALERTS_FILE, EXPLAIN_DIR
 
 def explain_latest_alert(n=1):
     if not os.path.exists(ALERTS_FILE):
@@ -31,8 +25,8 @@ def explain_latest_alert(n=1):
     explainer = shap.TreeExplainer(model)
     shap_values = explainer.shap_values(X.tail(n))
 
-    os.makedirs(OUT_DIR, exist_ok=True)
-    out_path = os.path.join(OUT_DIR, "shap_feature_importance.png")
+    os.makedirs(EXPLAIN_DIR, exist_ok=True)
+    out_path = os.path.join(EXPLAIN_DIR, "shap_feature_importance.png")
     shap.summary_plot(shap_values, X.tail(n), plot_type="bar", show=False)
     plt.savefig(out_path, bbox_inches="tight")
     plt.close()

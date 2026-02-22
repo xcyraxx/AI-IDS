@@ -7,85 +7,94 @@ import {
   Tooltip,
   ResponsiveContainer,
   CartesianGrid,
+  AreaChart,
+  Area
 } from "recharts";
 
 const API_BASE = "http://127.0.0.1:8000";
 const WS_URL = "ws://127.0.0.1:8000/ws/alerts";
-
-const card = {
-  background: "linear-gradient(180deg, #020617, #020617ee)",
-  borderRadius: 16,
-  padding: 16,
-  border: "1px solid #1e293b",
-  boxShadow: "0 10px 24px rgba(2,6,23,0.6)",
-};
 
 export default function App() {
   const [status, setStatus] = useState("loading...");
   const [alerts, setAlerts] = useState([]);
   const [wsStatus, setWsStatus] = useState("disconnected");
   const [timeline, setTimeline] = useState([]);
-  const beepRef = useRef(null);
+  const [sysInfo, setSysInfo] = useState(null);
+  const [stats, setStats] = useState(null);
+  const [shapTimestamp, setShapTimestamp] = useState(Date.now());
 
-  // Backend status
+  // Initialize Data
   useEffect(() => {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 4000);
 
     fetch(`${API_BASE}/status`, { signal: controller.signal })
-      .then((r) => {
-        if (!r.ok) throw new Error("backend down");
-        return r.json();
-      })
+      .then((r) => r.json())
       .then((d) => setStatus(d.status || d.backend || "ok"))
-      .catch(() => setStatus("backend down"))
+      .catch(() => setStatus("offline"))
       .finally(() => clearTimeout(timeout));
 
-    fetch(`${API_BASE}/alerts?limit=500`)
+    fetch(`${API_BASE}/alerts`)
       .then((r) => r.json())
       .then((d) => setAlerts(Array.isArray(d) ? d : []))
       .catch(() => setAlerts([]));
+
+    fetch(`${API_BASE}/model-info`)
+      .then((r) => r.json())
+      .then((d) => setSysInfo(d))
+      .catch(() => setSysInfo(null));
+
+    const pollData = () => {
+      fetch(`${API_BASE}/statistics`)
+        .then((r) => r.json())
+        .then((d) => setStats(d))
+        .catch(() => { });
+
+      fetch(`${API_BASE}/scores`)
+        .then((r) => r.json())
+        .then((d) => {
+          if (Array.isArray(d)) {
+            const formatted = d.map(p => ({
+              time: p.time ? p.time.split(' ')[1] : '-',
+              score: p.anomaly_score,
+              count: p.anomaly_score < 0.1 ? 1 : 0
+            }));
+            setTimeline(formatted);
+          }
+        })
+        .catch(() => { });
+    };
+
+    pollData();
+    const interval = setInterval(pollData, 5000);
+    return () => {
+      clearInterval(interval);
+      clearTimeout(timeout);
+    };
   }, []);
 
-  // WebSocket (robust + reconnect)
+  // WebSocket
   useEffect(() => {
     let ws;
     let retry;
-
     const connect = () => {
       ws = new WebSocket(WS_URL);
-
       ws.onopen = () => setWsStatus("connected");
-      ws.onerror = () => setWsStatus("error");
-
       ws.onclose = () => {
         setWsStatus("reconnecting");
         retry = setTimeout(connect, 2000);
       };
-
       ws.onmessage = (event) => {
         try {
           const payload = JSON.parse(event.data);
           const batch = Array.isArray(payload) ? payload : [payload];
-          const now = new Date().toLocaleTimeString();
-
-          setTimeline((prev) => [
-            ...prev.slice(-30),
-            { time: now, count: batch.length },
-          ]);
-
-          setAlerts((prev) => {
-            const updated = [...batch, ...prev].slice(0, 500);
-            const critical = batch.some((a) => a?.anomaly_score < 0.05);
-            if (critical && beepRef.current) beepRef.current.play().catch(() => {});
-            return updated;
-          });
+          setShapTimestamp(Date.now());
+          setAlerts((prev) => [...batch, ...prev].slice(0, 500));
         } catch (e) {
-          console.error("WS parse error:", e);
+          console.error("WS error:", e);
         }
       };
     };
-
     connect();
     return () => {
       clearTimeout(retry);
@@ -93,148 +102,167 @@ export default function App() {
     };
   }, []);
 
-  const badge = (state) => {
-    if (state === "loading...") {
-      return {
-        padding: "5px 12px",
-        borderRadius: 999,
-        fontWeight: 700,
-        fontSize: 12,
-        background: "rgba(148,163,184,0.15)",
-        color: "#94a3b8",
-        border: "1px solid rgba(148,163,184,0.35)",
-      };
-    }
-    const ok = state === "connected" || state === "ok";
-    return {
-      padding: "5px 12px",
-      borderRadius: 999,
-      fontWeight: 700,
-      fontSize: 12,
-      background: ok ? "rgba(34,197,94,0.15)" : "rgba(220,38,38,0.15)",
-      color: ok ? "#22c55e" : "#ef4444",
-      border: `1px solid ${ok ? "rgba(34,197,94,0.35)" : "rgba(220,38,38,0.35)"}`,
-    };
+  const getDanger = (score) => {
+    if (score == null) return { level: "?", label: "N/A", color: "#94a3b8" };
+    if (score < 0.05) return { level: 10, label: "CRITICAL", color: "#f43f5e" };
+    if (score < 0.1) return { level: 8, label: "HIGH", color: "#ef4444" };
+    if (score < 0.2) return { level: 6, label: "MEDIUM", color: "#f59e0b" };
+    return { level: 2, label: "SAFE", color: "#10b981" };
   };
-
-  const dangerLevel = (score) => {
-    if (score == null) return { level: "?", label: "N/A", color: "#94a3b8", glow: false };
-    if (score < 0.05) return { level: 10, label: "CRITICAL", color: "#dc2626", glow: true };
-    if (score < 0.1) return { level: 8, label: "HIGH", color: "#ef4444", glow: true };
-    if (score < 0.2) return { level: 6, label: "MEDIUM", color: "#f59e0b", glow: false };
-    if (score < 0.3) return { level: 4, label: "LOW", color: "#eab308", glow: false };
-    return { level: 2, label: "SAFE", color: "#22c55e", glow: false };
-  };
-
-  const avgRisk =
-    alerts.length === 0
-      ? 0
-      : Math.round(
-          alerts
-            .slice(0, 20)
-            .reduce((a, b) => a + dangerLevel(b?.anomaly_score).level, 0) /
-            Math.min(20, alerts.length)
-        );
-
-  const attackConfidence = avgRisk >= 8 ? "HIGH" : avgRisk >= 5 ? "MEDIUM" : "LOW";
 
   return (
-    <div style={{ height: "100vh", width: "100vw", background: "radial-gradient(circle at top, #0b1220, #020617)", color: "#e5e7eb" }}>
-      <audio ref={beepRef} src="/beep.mp3" preload="auto" />
+    <div className="dashboard-container">
 
-      <div style={{ padding: 18, height: "100%", display: "grid", gridTemplateRows: "auto 1fr", gap: 14 }}>
-        <header style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-          <h1 style={{ fontSize: 22 }}>🛡 IDS Security Dashboard</h1>
-          <div style={{ display: "flex", gap: 10 }}>
-            <span style={badge(status)}>Backend: {status}</span>
-            <span style={badge(wsStatus)}>WS: {wsStatus}</span>
-          </div>
-        </header>
+      <header style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+        <div>
+          <h1 style={{ fontSize: "1.75rem", fontWeight: 800 }}>Cool Name</h1>
+          <p style={{ color: "var(--text-secondary)", fontSize: "0.875rem" }}>Real-time Neural Intrusion Detection</p>
+        </div>
+        <div style={{ display: "flex", gap: "0.75rem" }}>
+          <span className={`status-badge ${status === 'ok' ? 'badge-ok' : 'badge-error'}`}>
+            API: {status}
+          </span>
+          <span className={`status-badge ${wsStatus === 'connected' ? 'badge-ok' : 'badge-wait'}`}>
+            Live Stream: {wsStatus}
+          </span>
+        </div>
+      </header>
 
-        <div style={{ display: "grid", gridTemplateColumns: "1.7fr 1fr", gap: 16, height: "100%" }}>
-          {/* LEFT */}
-          <div style={{ display: "grid", gridTemplateRows: "auto 1fr", gap: 16 }}>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 16 }}>
-              <div style={card}>
-                <div style={{ opacity: 0.6 }}>Active Alerts</div>
-                <div style={{ fontSize: 32, fontWeight: 900 }}>{alerts.length}</div>
-              </div>
-              <div style={card}>
-                <div style={{ opacity: 0.6 }}>Risk Meter</div>
-                <div style={{ fontSize: 32, fontWeight: 900, color: avgRisk >= 8 ? "#dc2626" : avgRisk >= 5 ? "#f59e0b" : "#22c55e" }}>
-                  {avgRisk}/10
-                </div>
-              </div>
-              <div style={card}>
-                <div style={{ opacity: 0.6 }}>Attack Confidence</div>
-                <div style={{ fontSize: 18, fontWeight: 800 }}>{attackConfidence}</div>
-              </div>
+      <main className="main-grid">
+        {/* Left Column: Stats + Timeline + Alerts */}
+        <div style={{ display: "flex", flexDirection: "column", gap: "1.5rem", minHeight: 0 }}>
+
+          <div className="stat-grid">
+            <div className="glass-card stat-card">
+              <span className="stat-label">Total Alerts</span>
+              <span className="stat-value">{stats?.total_alerts || 0}</span>
             </div>
+            <div className="glass-card stat-card">
+              <span className="stat-label">Avg Anomaly Score</span>
+              <span className="stat-value" style={{ color: (stats?.average_anomaly_score < 0.2) ? 'var(--accent-red)' : 'var(--text-primary)' }}>
+                {stats?.average_anomaly_score || "0.0000"}
+              </span>
+            </div>
+            <div className="glass-card stat-card">
+              <span className="stat-label">System Health</span>
+              <span className="stat-value" style={{ color: 'var(--accent-green)' }}>EXCELLENT</span>
+            </div>
+          </div>
 
-            <div style={{ ...card, overflow: "hidden", display: "grid", gridTemplateRows: "auto 1fr" }}>
-              <div style={{ fontWeight: 700, marginBottom: 10 }}>🚨 Live Alerts</div>
-              <div style={{ overflowY: "auto" }}>
-                <table width="100%" style={{ borderCollapse: "collapse", fontSize: 13 }}>
-                  <thead>
-                    <tr style={{ opacity: 0.6 }}>
-                      <th align="left">Time</th>
-                      <th align="left">Source</th>
-                      <th align="left">Danger</th>
+          <div className="glass-card" style={{ flex: 1, minHeight: "300px" }}>
+            <h3 className="heading-font" style={{ marginBottom: "1.25rem", fontSize: "1.1rem" }}>Anomaly Timeline</h3>
+            <div style={{ flex: 1 }}>
+              <ResponsiveContainer width="100%" height="100%">
+                <AreaChart data={timeline}>
+                  <defs>
+                    <linearGradient id="colorScore" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="5%" stopColor="#38bdf8" stopOpacity={0.3} />
+                      <stop offset="95%" stopColor="#38bdf8" stopOpacity={0} />
+                    </linearGradient>
+                  </defs>
+                  <CartesianGrid stroke="rgba(255,255,255,0.05)" vertical={false} />
+                  <XAxis dataKey="time" axisLine={false} tickLine={false} tick={{ fill: '#475569', fontSize: 10 }} />
+                  <YAxis axisLine={false} tickLine={false} tick={{ fill: '#475569', fontSize: 10 }} />
+                  <Tooltip
+                    contentStyle={{ backgroundColor: '#0f172a', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '8px' }}
+                    itemStyle={{ color: '#fff' }}
+                  />
+                  <Area type="monotone" dataKey="score" stroke="#38bdf8" fillOpacity={1} fill="url(#colorScore)" strokeWidth={2} />
+                </AreaChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+
+          <div className="glass-card" style={{ flex: 1.2, minHeight: 0 }}>
+            <h3 className="heading-font" style={{ marginBottom: "1rem", fontSize: "1.1rem" }}>Incursion Log</h3>
+            <div className="table-container">
+              <table className="custom-table">
+                <thead>
+                  <tr>
+                    <th>TIMESTAMP</th>
+                    <th>SOURCE IP</th>
+                    <th>THREAT LEVEL</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {alerts.map((a, i) => {
+                    const d = getDanger(a?.anomaly_score);
+                    return (
+                      <tr key={i}>
+                        <td style={{ color: "var(--text-secondary)", fontFamily: "monospace" }}>{a?.time || "-"}</td>
+                        <td style={{ fontWeight: 600 }}>{a?.src_ip || "-"}</td>
+                        <td style={{ color: d.color, fontWeight: 700 }}>
+                          <span style={{ display: 'inline-block', width: 8, height: 8, borderRadius: '50%', background: d.color, marginRight: 8 }}></span>
+                          {d.label}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                  {alerts.length === 0 && (
+                    <tr>
+                      <td colSpan="3" style={{ textAlign: "center", padding: "3rem", opacity: 0.3 }}>Monitoring network for threats...</td>
                     </tr>
-                  </thead>
-                  <tbody>
-                    {alerts.map((a, i) => {
-                      const d = dangerLevel(a?.anomaly_score);
-                      return (
-                        <tr key={i} style={{ borderTop: "1px solid #1e293b", boxShadow: d.glow ? "inset 0 0 0 9999px rgba(220,38,38,0.08)" : "none" }}>
-                          <td>{a?.time || "-"}</td>
-                          <td>{a?.src_ip || "-"}</td>
-                          <td style={{ fontWeight: 700, color: d.color }}>
-                            {d.level}/10 {d.label}
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          </div>
-
-          {/* RIGHT */}
-          <div style={{ display: "grid", gridTemplateRows: "1.2fr 1fr 1fr", gap: 16 }}>
-            <div style={card}>
-              <div style={{ fontWeight: 700, marginBottom: 8 }}>📈 Anomaly Timeline</div>
-              <div style={{ height: 260 }}>
-                <ResponsiveContainer>
-                  <LineChart data={timeline}>
-                    <CartesianGrid stroke="#1e293b" strokeDasharray="3 3" />
-                    <XAxis dataKey="time" tick={{ fill: "#94a3b8", fontSize: 12 }} />
-                    <YAxis tick={{ fill: "#94a3b8", fontSize: 12 }} />
-                    <Tooltip contentStyle={{ background: "#020617", border: "1px solid #1e293b" }} />
-                    <Line type="monotone" dataKey="count" stroke="#38bdf8" strokeWidth={2} dot={false} />
-                  </LineChart>
-                </ResponsiveContainer>
-              </div>
-            </div>
-
-            <div style={card}>
-              <div style={{ fontWeight: 700 }}>🧠 Feature Importance</div>
-              <div style={{ opacity: 0.6, fontSize: 12 }}>SHAP visualization available in backend</div>
-            </div>
-
-            <div style={card}>
-              <div style={{ fontWeight: 700 }}>ℹ️ System Info</div>
-              <ul style={{ fontSize: 13, opacity: 0.85, lineHeight: 1.8, paddingLeft: 16 }}>
-                <li>Model: Isolation Forest</li>
-                <li>Window: 10s</li>
-                <li>WebSocket: Real-time</li>
-                <li>Explainable AI: SHAP</li>
-              </ul>
+                  )}
+                </tbody>
+              </table>
             </div>
           </div>
         </div>
-      </div>
+
+        {/* Right Column: SHAP + System Info */}
+        <div style={{ display: "flex", flexDirection: "column", gap: "1.5rem" }}>
+          <div className="glass-card" style={{ height: "450px" }}>
+            <h3 className="heading-font" style={{ marginBottom: "1rem", fontSize: "1.1rem" }}>Neural Explanation (SHAP)</h3>
+            <div className="shap-container">
+              <img
+                src={`${API_BASE}/explain/shap_feature_importance.png?t=${shapTimestamp}`}
+                alt="Explanation Graph"
+                style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain" }}
+                onError={(e) => { e.target.style.display = 'none'; }}
+                onLoad={(e) => { e.target.style.display = 'block'; }}
+              />
+              <div style={{ position: 'absolute', opacity: 0.2, fontSize: "0.75rem", textAlign: "center", padding: "2rem" }}>
+                Waiting for anomaly detection to generate XAI visualization...
+              </div>
+            </div>
+          </div>
+
+          <div className="glass-card">
+            <h3 className="heading-font" style={{ marginBottom: "1.25rem", fontSize: "1.1rem" }}>System Intelligence</h3>
+            <div style={{ display: "flex", flexDirection: "column", gap: "0.85rem" }}>
+              <div style={sysRow}>
+                <span style={sysLabel}>AI Model</span>
+                <span style={sysVal}>{sysInfo?.model || "Isolation Forest"}</span>
+              </div>
+              <div style={sysRow}>
+                <span style={sysLabel}>Analysis Window</span>
+                <span style={sysVal}>{sysInfo?.window || "10.0s"}</span>
+              </div>
+              <div style={sysRow}>
+                <span style={sysLabel}>Sensitivity</span>
+                <span style={sysVal}>{sysInfo?.threshold || "0.10"}</span>
+              </div>
+              <div style={sysRow}>
+                <span style={sysLabel}>Engine Status</span>
+                <span style={{ ...sysVal, color: 'var(--accent-green)' }}>OPTIMIZED</span>
+              </div>
+            </div>
+
+            <div style={{ marginTop: "1.5rem", padding: "1rem", background: "rgba(56, 189, 248, 0.05)", borderRadius: "0.75rem", border: "1px border var(--border-subtle)" }}>
+              <h4 style={{ fontSize: "0.75rem", color: "var(--accent-blue)", marginBottom: "0.5rem", fontWeight: 700 }}>ACTIVE FEATURES</h4>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: "0.4rem" }}>
+                {sysInfo?.features?.map((f, i) => (
+                  <span key={i} style={{ fontSize: "0.65rem", padding: "0.2rem 0.5rem", background: "rgba(255,255,255,0.05)", borderRadius: "4px", color: "var(--text-secondary)" }}>{f}</span>
+                ))}
+              </div>
+            </div>
+          </div>
+        </div>
+      </main>
     </div>
   );
 }
+
+const sysRow = { display: "flex", justifyContent: "space-between", alignItems: "center", borderBottom: "1px solid rgba(255,255,255,0.03)", paddingBottom: "0.5rem" };
+const sysLabel = { fontSize: "0.8125rem", color: "var(--text-secondary)" };
+const sysVal = { fontSize: "0.8125rem", fontWeight: 600, fontFamily: "monospace" };

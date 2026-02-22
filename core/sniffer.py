@@ -3,22 +3,14 @@ from collections import deque
 from datetime import datetime
 import csv
 import os
-
-# ========== CONFIG ==========
-MAX_BUFFER_SIZE = 200
-SAVE_FILE = "data/traffic.csv"
-
-# Filter settings (change as needed)
-ALLOWED_PROTOCOLS = ["TCP", "UDP", "ICMP"]   # or [] for all
-ALLOWED_PORTS = [80, 443, 22]                # HTTP, HTTPS, SSH
+from core.config import TRAFFIC_FILE, MAX_BUFFER_SIZE, ALLOWED_PROTOCOLS, ALLOWED_PORTS
 
 # Packet buffer (queue)
 packet_buffer = deque(maxlen=MAX_BUFFER_SIZE)
 
 # Create CSV if not exists
-os.makedirs("data", exist_ok=True)
-if not os.path.exists(SAVE_FILE):
-    with open(SAVE_FILE, "w", newline="") as f:
+if not os.path.exists(TRAFFIC_FILE):
+    with open(TRAFFIC_FILE, "w", newline="") as f:
         writer = csv.writer(f)
         writer.writerow(["time", "src_ip", "dst_ip", "protocol", "src_port", "dst_port", "size"])
 
@@ -65,11 +57,11 @@ def process_packet(pkt):
     packet_buffer.append(packet_info)
 
     # Save to CSV
-    with open(SAVE_FILE, "a", newline="") as f:
+    with open(TRAFFIC_FILE, "a", newline="") as f:
         writer = csv.writer(f)
         writer.writerow(packet_info.values())
 
-    print(f"[+] {packet_info['src_ip']} → {packet_info['dst_ip']} | {proto} | {packet_info['size']} bytes")
+    #print(f"[+] {packet_info['src_ip']} → {packet_info['dst_ip']} | {proto} | {packet_info['size']} bytes")
 
 def start_sniffing():
     print("🚀 Packet sniffer started... (Press CTRL+C to stop)")

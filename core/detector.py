@@ -3,27 +3,23 @@ import pandas as pd
 import joblib
 import sys
 import os
+from core.config import FEATURES_FILE, MODEL_PATH, ALERTS_FILE, SCORES_FILE, ANOMALY_THRESHOLD, POLL_INTERVAL
+from core.extractor import extract_advanced_features
+from core.explainer import explain_latest_alert
 
-# Add root to path so we can import features
-sys.path.append(os.getcwd())
-from features.extractor import extract_advanced_features
-
-FEATURE_FILE = "data/features_advanced.csv"
-MODEL_PATH = "model/ids_model.pkl"
-ALERTS_FILE = "data/alerts.csv"
-
-# Demo-friendly threshold (tune later)
-ANOMALY_THRESHOLD = 0.1
-
-def detect_loop(poll_interval=10):
+def detect_loop(poll_interval=POLL_INTERVAL):
     print("🚨 IDS Detection Mode started (CTRL+C to stop)")
+    if not os.path.exists(MODEL_PATH):
+        print(f"❌ Model not found at {MODEL_PATH}")
+        return
+
     model = joblib.load(MODEL_PATH)
 
-    # Ensure alerts file exists
-    try:
-        pd.read_csv(ALERTS_FILE)
-    except:
+    # Ensure files exist
+    if not os.path.exists(ALERTS_FILE):
         pd.DataFrame(columns=["time", "src_ip", "anomaly_score", "alert"]).to_csv(ALERTS_FILE, index=False)
+    if not os.path.exists(SCORES_FILE):
+        pd.DataFrame(columns=["time", "src_ip", "anomaly_score"]).to_csv(SCORES_FILE, index=False)
 
     last_seen_rows = 0
 
@@ -32,7 +28,11 @@ def detect_loop(poll_interval=10):
             # Refresh features from raw traffic
             extract_advanced_features()
             
-            df = pd.read_csv(FEATURE_FILE)
+            if not os.path.exists(FEATURES_FILE):
+                time.sleep(poll_interval)
+                continue
+
+            df = pd.read_csv(FEATURES_FILE)
 
             if len(df) <= last_seen_rows:
                 time.sleep(poll_interval)
@@ -51,6 +51,9 @@ def detect_loop(poll_interval=10):
             new_df["anomaly_score"] = scores
             new_df["anomaly"] = preds
 
+            # Log all scores for the timeline
+            new_df[["time", "src_ip", "anomaly_score"]].to_csv(SCORES_FILE, mode="a", header=False, index=False)
+
             print(f"🧪 Min score in batch: {new_df['anomaly_score'].min():.4f}")
 
             alerts = new_df[(new_df["anomaly"] == -1) | (new_df["anomaly_score"] < ANOMALY_THRESHOLD)]
@@ -63,6 +66,10 @@ def detect_loop(poll_interval=10):
                 alert_log = alerts[["time", "src_ip", "anomaly_score"]].copy()
                 alert_log["alert"] = "anomaly_detected"
                 alert_log.to_csv(ALERTS_FILE, mode="a", header=False, index=False)
+
+                # TRIGGER EXPLAINER
+                print("🧠 Generating explanation for the latest alert...")
+                explain_latest_alert(n=1)
 
             time.sleep(poll_interval)
 

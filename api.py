@@ -1,12 +1,18 @@
 from fastapi import FastAPI, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from typing import List
 import asyncio
 from datetime import datetime
 import pandas as pd
 import os
+from core.config import ALERTS_FILE, EXPLAIN_DIR, SCORES_FILE
 
 app = FastAPI(title="IDS API", version="1.0")
+
+# Serve explanation images
+os.makedirs(EXPLAIN_DIR, exist_ok=True)
+app.mount("/explain", StaticFiles(directory=EXPLAIN_DIR), name="explain")
 
 # Allow frontend access
 app.add_middleware(
@@ -17,18 +23,14 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# File path
-ALERTS_FILE = "data/alerts.csv"
-
-def get_alerts_from_file():
-    if not os.path.exists(ALERTS_FILE):
+def get_data_from_file(filepath, limit=100):
+    if not os.path.exists(filepath):
         return []
     try:
-        # Read last 500 lines to keep it fast
-        df = pd.read_csv(ALERTS_FILE)
-        return df.tail(500).to_dict("records")
+        df = pd.read_csv(filepath)
+        return df.tail(limit).to_dict("records")
     except Exception as e:
-        print(f"Error reading alerts: {e}")
+        print(f"Error reading {filepath}: {e}")
         return []
 
 # In-memory alert store (can be used for newly incoming alerts)
@@ -42,14 +44,34 @@ def status():
 
 @app.get("/alerts")
 def get_alerts():
-    file_alerts = get_alerts_from_file()
+    file_alerts = get_data_from_file(ALERTS_FILE, limit=500)
     return file_alerts[::-1]  # newest first
+
+@app.get("/scores")
+def get_scores():
+    # Last 50 scores for the timeline
+    return get_data_from_file(SCORES_FILE, limit=50)
 
 @app.get("/statistics")
 def statistics():
+    file_alerts = get_data_from_file(ALERTS_FILE, limit=500)
+    total = len(file_alerts)
+    
+    last_time = None
+    avg_score = 0
+    
+    if total > 0:
+        df = pd.DataFrame(file_alerts)
+        if "time" in df.columns:
+            last_time = df.iloc[0]["time"]
+        if "anomaly_score" in df.columns:
+            avg_score = df["anomaly_score"].mean()
+
     return {
-        "total_alerts": len(alerts),
-        "last_alert_time": alerts[-1]["time"] if alerts else None,
+        "total_alerts": total,
+        "last_alert_time": last_time,
+        "average_anomaly_score": round(float(avg_score), 4),
+        "status": "active"
     }
 
 @app.get("/model-info")
@@ -59,11 +81,13 @@ def model_info():
         "window": "10s",
         "features": [
             "packet_count",
+            "avg_packet_size",
             "unique_dst_ports",
             "avg_inter_arrival",
             "protocol_entropy",
         ],
         "explainable_ai": "SHAP",
+        "threshold": 0.1
     }
 
 # Debug endpoint to simulate alerts

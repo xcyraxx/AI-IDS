@@ -2,16 +2,13 @@ import pandas as pd
 import numpy as np
 from scipy.stats import entropy
 from sklearn.preprocessing import StandardScaler
-
-INPUT_FILE = "data/traffic.csv"
-OUTPUT_FILE = "data/features_advanced.csv"
-WINDOW = "10s"   # 10-second time window
+from core.config import TRAFFIC_FILE, FEATURES_FILE, WINDOW_SIZE
 
 def shannon_entropy(series):
     probs = series.value_counts(normalize=True)
     return entropy(probs, base=2)
 
-def extract_advanced_features(input_file=INPUT_FILE, output_file=OUTPUT_FILE):
+def extract_advanced_features(input_file=TRAFFIC_FILE, output_file=FEATURES_FILE):
     df = pd.read_csv(input_file)
 
     # Convert time to datetime
@@ -23,7 +20,7 @@ def extract_advanced_features(input_file=INPUT_FILE, output_file=OUTPUT_FILE):
 
     # Time window aggregation
     df.set_index("time", inplace=True)
-    grouped = df.groupby([pd.Grouper(freq=WINDOW), "src_ip"])
+    grouped = df.groupby([pd.Grouper(freq=WINDOW_SIZE), "src_ip"])
 
     features = grouped.agg(
         packet_count=("size", "count"),
